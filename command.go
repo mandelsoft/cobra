@@ -108,6 +108,16 @@ type Command struct {
 	// command does not define one.
 	Version string
 
+	// PreFlags is called before the flag parsing is done for a command.
+	PreFlags func(cmd *Command, args []string)
+	// PreFlagsE PreFlags, but returns an error.
+	PreFlagsE func(cmd *Command, args []string) error
+
+	// PostFlags is called after the flag parsing is done for a command.
+	PostFlags func(cmd *Command, args []string)
+	// PostFlagsE PostFlags, but returns an error.
+	PostFlagsE func(cmd *Command, args []string) error
+
 	// The *Run functions are executed in the following order:
 	//   * PersistentPreRun()
 	//   * PreRun()
@@ -677,7 +687,16 @@ func isFlagArg(arg string) bool {
 func (c *Command) Find(args []string) (*Command, []string, error) {
 	var innerfind func(*Command, []string) (*Command, []string)
 
+	var err error
+
 	innerfind = func(c *Command, innerArgs []string) (*Command, []string) {
+		if c.PreFlagsE != nil {
+			if err = c.PreFlagsE(c, args); err != nil {
+				return nil, nil
+			}
+		} else if c.PreFlags != nil {
+			c.PreFlags(c, args)
+		}
 		argsWOflags := stripFlags(innerArgs, c)
 		if len(argsWOflags) == 0 {
 			return c, innerArgs
@@ -695,7 +714,7 @@ func (c *Command) Find(args []string) (*Command, []string, error) {
 	if commandFound.Args == nil {
 		return commandFound, a, legacyArgs(commandFound, stripFlags(a, commandFound))
 	}
-	return commandFound, a, nil
+	return commandFound, a, err
 }
 
 func (c *Command) findSuggestions(arg string) string {
@@ -740,6 +759,14 @@ func (c *Command) Traverse(args []string) (*Command, []string, error) {
 	flags := []string{}
 	inFlag := false
 
+	if c.PreFlagsE != nil {
+		if err := c.PreFlagsE(c, args); err != nil {
+			return nil, nil, err
+		}
+	} else if c.PreFlags != nil {
+		c.PreFlags(c, args)
+	}
+
 	for i, arg := range args {
 		switch {
 		// A long flag with a space separated value
@@ -775,6 +802,15 @@ func (c *Command) Traverse(args []string) (*Command, []string, error) {
 		if err := c.ParseFlags(flags); err != nil {
 			return nil, args, err
 		}
+
+		if c.PostFlagsE != nil {
+			if err := c.PostFlagsE(c, args[i+1:]); err != nil {
+				return nil, nil, err
+			}
+		} else if c.PostFlags != nil {
+			c.PostFlags(c, args[i+1:])
+		}
+
 		return cmd.Traverse(args[i+1:])
 	}
 	return c, args, nil
@@ -840,6 +876,14 @@ func (c *Command) execute(a []string) (err error) {
 	err = c.ParseFlags(a)
 	if err != nil {
 		return c.FlagErrorFunc()(c, err)
+	}
+
+	if c.PostFlagsE != nil {
+		if err := c.PostFlagsE(c, c.Flags().Args()); err != nil {
+			return err
+		}
+	} else if c.PostFlags != nil {
+		c.PostFlags(c, c.Flags().Args())
 	}
 
 	// If help is called, regardless of other flags, return we want help.
